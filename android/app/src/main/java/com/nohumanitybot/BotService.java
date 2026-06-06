@@ -171,7 +171,7 @@ public class BotService extends Service {
         double bestScore = Double.MAX_VALUE;
         int bestX = sw / 2, bestY = sh * 3 / 4;
 
-        for (int y = sh / 2; y < sh - th; y += 3) {
+          for (int y = 0; y < sh - th; y += 3) {
             for (int x = 0; x < sw - tw; x += 3) {
                 double score = matchScore(screen, x, y, tw, th);
                 if (score < bestScore) {
