@@ -6,6 +6,7 @@ import android.app.NotificationManager;
 import android.app.Service;
 import android.content.Intent;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.PixelFormat;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
@@ -24,8 +25,10 @@ public class BotService extends Service {
     private MediaProjection mediaProjection;
     private VirtualDisplay virtualDisplay;
     private ImageReader imageReader;
-    private static final int WIDTH = 486;
-    private static final int HEIGHT = 1107;
+    private Bitmap shipTemplate;
+
+    private int screenWidth;
+    private int screenHeight;
 
     public static BotAccessibility accessibility;
 
@@ -39,15 +42,23 @@ public class BotService extends Service {
                 .build();
         startForeground(1, notification);
 
+        // Загружаем шаблон кораблика
+        shipTemplate = BitmapFactory.decodeResource(getResources(), R.drawable.Screenshot_20260606_132955__2);
+
+        // Берём реальный размер экрана
+        android.util.DisplayMetrics metrics = getResources().getDisplayMetrics();
+        screenWidth = metrics.widthPixels;
+        screenHeight = metrics.heightPixels;
+
         int resultCode = intent.getIntExtra("resultCode", -1);
         Intent data = intent.getParcelableExtra("data");
 
         MediaProjectionManager manager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
         mediaProjection = manager.getMediaProjection(resultCode, data);
 
-        imageReader = ImageReader.newInstance(WIDTH, HEIGHT, PixelFormat.RGBA_8888, 2);
+        imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2);
         virtualDisplay = mediaProjection.createVirtualDisplay(
-                "BotDisplay", WIDTH, HEIGHT, 300,
+                "BotDisplay", screenWidth, screenHeight, metrics.densityDpi,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                 imageReader.getSurface(), null, null);
 
@@ -78,42 +89,82 @@ public class BotService extends Service {
         ByteBuffer buffer = planes[0].getBuffer();
         int pixelStride = planes[0].getPixelStride();
         int rowStride = planes[0].getRowStride();
-        int rowPadding = rowStride - pixelStride * WIDTH;
+        int rowPadding = rowStride - pixelStride * screenWidth;
         Bitmap bitmap = Bitmap.createBitmap(
-                WIDTH + rowPadding / pixelStride, HEIGHT, Bitmap.Config.ARGB_8888);
+                screenWidth + rowPadding / pixelStride, screenHeight, Bitmap.Config.ARGB_8888);
         bitmap.copyPixelsFromBuffer(buffer);
         return bitmap;
     }
 
-    private void processFrame(Bitmap bitmap) {
-        // Найти корабль (белый пиксель в нижней части)
-        int shipX = WIDTH / 2, shipY = HEIGHT * 3 / 4;
-        for (int y = HEIGHT / 2; y < HEIGHT; y++) {
-            for (int x = 0; x < WIDTH; x++) {
-                int pixel = bitmap.getPixel(x, y);
-                int r = (pixel >> 16) & 0xFF;
-                int g = (pixel >> 8) & 0xFF;
-                int b = pixel & 0xFF;
-                if (r > 200 && g > 200 && b > 200) {
-                    shipX = x;
-                    shipY = y;
-                    break;
+    // Template matching — ищем кораблик на экране
+    private int[] findShip(Bitmap screen) {
+        int tw = shipTemplate.getWidth();
+        int th = shipTemplate.getHeight();
+        int sw = screen.getWidth();
+        int sh = screen.getHeight();
+
+        double bestScore = Double.MAX_VALUE;
+        int bestX = sw / 2, bestY = sh * 3 / 4;
+
+        // Ищем только в нижней половине экрана
+        for (int y = sh / 2; y < sh - th; y += 3) {
+            for (int x = 0; x < sw - tw; x += 3) {
+                double score = matchScore(screen, x, y, tw, th);
+                if (score < bestScore) {
+                    bestScore = score;
+                    bestX = x + tw / 2;
+                    bestY = y + th / 2;
                 }
             }
         }
 
-        // Найти ближайшую пулю (чёрный пиксель)
+        return new int[]{bestX, bestY};
+    }
+
+    private double matchScore(Bitmap screen, int startX, int startY, int tw, int th) {
+        double diff = 0;
+        int samples = 0;
+        // Сравниваем каждый 4й пиксель для скорости
+        for (int y = 0; y < th; y += 4) {
+            for (int x = 0; x < tw; x += 4) {
+                int tp = shipTemplate.getPixel(x, y);
+                int sp = screen.getPixel(startX + x, startY + y);
+                int dr = ((tp >> 16) & 0xFF) - ((sp >> 16) & 0xFF);
+                int dg = ((tp >> 8) & 0xFF) - ((sp >> 8) & 0xFF);
+                int db = (tp & 0xFF) - (sp & 0xFF);
+                diff += dr*dr + dg*dg + db*db;
+                samples++;
+            }
+        }
+        return diff / samples;
+    }
+
+    private void processFrame(Bitmap bitmap) {
+        // Находим корабль через template matching
+        int[] shipPos = findShip(bitmap);
+        int shipX = shipPos[0];
+        int shipY = shipPos[1];
+
+        // Находим ближайшую пулю
         int nearestBulletX = -1, nearestBulletY = -1;
         double minDist = Double.MAX_VALUE;
-        for (int y = 0; y < HEIGHT; y++) {
-            for (int x = 0; x < WIDTH; x++) {
+
+        // Ищем пули в радиусе 250px вокруг корабля
+        int searchR = 250;
+        int x0 = Math.max(0, shipX - searchR);
+        int x1 = Math.min(bitmap.getWidth(), shipX + searchR);
+        int y0 = Math.max(0, shipY - searchR);
+        int y1 = Math.min(bitmap.getHeight(), shipY + searchR);
+
+        for (int y = y0; y < y1; y += 2) {
+            for (int x = x0; x < x1; x += 2) {
                 int pixel = bitmap.getPixel(x, y);
                 int r = (pixel >> 16) & 0xFF;
                 int g = (pixel >> 8) & 0xFF;
                 int b = pixel & 0xFF;
-                if (r < 50 && g < 50 && b < 50) {
+                if (r < 40 && g < 40 && b < 40) {
                     double dist = Math.sqrt(Math.pow(x - shipX, 2) + Math.pow(y - shipY, 2));
-                    if (dist < minDist && dist < 200) {
+                    if (dist < minDist && dist > 20) {
                         minDist = dist;
                         nearestBulletX = x;
                         nearestBulletY = y;
@@ -122,14 +173,14 @@ public class BotService extends Service {
             }
         }
 
-        // Двигаться от пули
-        if (nearestBulletX != -1 && accessibility != null) {
+        // Двигаемся от пули
+        if (nearestBulletX != -1 && accessibility != null && minDist < 200) {
             int dx = shipX - nearestBulletX;
             int dy = shipY - nearestBulletY;
-            int newX = Math.max(50, Math.min(WIDTH - 50, shipX + (dx > 0 ? 80 : -80)));
-            int newY = Math.max(50, Math.min(HEIGHT - 50, shipY + (dy > 0 ? 80 : -80)));
+            int newX = Math.max(50, Math.min(screenWidth - 50, shipX + (dx > 0 ? 100 : -100)));
+            int newY = Math.max(50, Math.min(screenHeight - 50, shipY + (dy > 0 ? 100 : -100)));
             accessibility.tap(newX, newY);
-            Log.d(TAG, "Tapping: " + newX + ", " + newY);
+            Log.d(TAG, "Ship: " + shipX + "," + shipY + " Bullet: " + nearestBulletX + "," + nearestBulletY + " → " + newX + "," + newY);
         }
     }
 
@@ -141,4 +192,4 @@ public class BotService extends Service {
 
     @Override
     public IBinder onBind(Intent intent) { return null; }
-                      }
+                   }
