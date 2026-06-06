@@ -27,6 +27,18 @@ import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.TextView;
 
+import org.opencv.android.OpenCVLoader;
+import org.opencv.android.Utils;
+import org.opencv.core.Core;
+import org.opencv.core.CvType;
+import org.opencv.core.Mat;
+import org.opencv.core.MatOfPoint;
+import org.opencv.core.Point;
+import org.opencv.core.Rect;
+import org.opencv.core.Scalar;
+import org.opencv.core.Size;
+import org.opencv.imgproc.Imgproc;
+
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
@@ -37,7 +49,7 @@ public class BotService extends Service {
     private MediaProjection mediaProjection;
     private VirtualDisplay virtualDisplay;
     private ImageReader imageReader;
-    private Bitmap shipTemplate;
+    private Mat shipTemplate;
     private int screenWidth;
     private int screenHeight;
     private boolean botEnabled = false;
@@ -85,9 +97,6 @@ public class BotService extends Service {
             super.onDraw(canvas);
             canvas.drawRect(0, 0, getWidth(), getHeight(), bgPaint);
 
-            // Тест квадрат — всегда виден
-            canvas.drawRect(50, 50, 150, 150, shipPaint);
-
             // Зелёный квадрат вокруг корабля
             if (shipX > 0 && shipY > 0) {
                 canvas.drawRect(shipX-25, shipY-25, shipX+25, shipY+25, shipPaint);
@@ -99,7 +108,6 @@ public class BotService extends Service {
                                bullet[0]+12, bullet[1]+12, bulletPaint);
             }
 
-            // Отладочная информация
             canvas.drawText(debugInfo, 10, getHeight() - 80, textPaint);
             canvas.drawText("Ошибка: " + lastError, 10, getHeight() - 40, errorPaint);
         }
@@ -116,9 +124,21 @@ public class BotService extends Service {
                     .build();
             startForeground(1, notification);
 
-            shipTemplate = BitmapFactory.decodeResource(getResources(), R.drawable.ship);
-            if (shipTemplate == null) {
-                lastError = "ship.png не найден!";
+            // Инициализация OpenCV
+            if (!OpenCVLoader.initLocal()) {
+                lastError = "OpenCV не загрузился!";
+                Log.e(TAG, lastError);
+            } else {
+                debugInfo = "OpenCV OK";
+                // Загружаем шаблон корабля через OpenCV
+                Bitmap shipBitmap = BitmapFactory.decodeResource(getResources(), R.drawable.ship);
+                if (shipBitmap != null) {
+                    shipTemplate = new Mat();
+                    Utils.bitmapToMat(shipBitmap, shipTemplate);
+                    Imgproc.cvtColor(shipTemplate, shipTemplate, Imgproc.COLOR_RGBA2GRAY);
+                } else {
+                    lastError = "ship.png не найден!";
+                }
             }
 
             android.util.DisplayMetrics metrics = getResources().getDisplayMetrics();
@@ -263,77 +283,70 @@ public class BotService extends Service {
         return bitmap;
     }
 
-    private int[] findShip(Bitmap screen) {
+    private int[] findShip(Mat gray) {
         if (shipTemplate == null) {
-            lastError = "ship.png не загружен!";
+            lastError = "Шаблон не загружен!";
             return new int[]{screenWidth/2, screenHeight/2};
         }
-        int tw = shipTemplate.getWidth();
-        int th = shipTemplate.getHeight();
-        int sw = screen.getWidth();
-        int sh = screen.getHeight();
 
-        double bestScore = Double.MAX_VALUE;
-        int bestX = sw / 2, bestY = sh / 2;
+        try {
+            Mat result = new Mat();
+            Imgproc.matchTemplate(gray, shipTemplate, result, Imgproc.TM_CCOEFF_NORMED);
+            Core.MinMaxLocResult mmr = Core.minMaxLoc(result);
+            Point matchLoc = mmr.maxLoc;
 
-        for (int y = 0; y < sh - th; y += 3) {
-            for (int x = 0; x < sw - tw; x += 3) {
-                double score = matchScore(screen, x, y, tw, th);
-                if (score < bestScore) {
-                    bestScore = score;
-                    bestX = x + tw / 2;
-                    bestY = y + th / 2;
-                }
-            }
+            int x = (int)(matchLoc.x + shipTemplate.cols() / 2);
+            int y = (int)(matchLoc.y + shipTemplate.rows() / 2);
+
+            result.release();
+            return new int[]{x, y};
+        } catch (Exception e) {
+            lastError = "findShip: " + e.getMessage();
+            return new int[]{screenWidth/2, screenHeight/2};
         }
-        return new int[]{bestX, bestY};
     }
 
-    private double matchScore(Bitmap screen, int startX, int startY, int tw, int th) {
-        double diff = 0;
-        int samples = 0;
-        for (int y = 0; y < th; y += 4) {
-            for (int x = 0; x < tw; x += 4) {
-                int tp = shipTemplate.getPixel(x, y);
-                int sp = screen.getPixel(startX + x, startY + y);
-                int dr = ((tp >> 16) & 0xFF) - ((sp >> 16) & 0xFF);
-                int dg = ((tp >> 8) & 0xFF) - ((sp >> 8) & 0xFF);
-                int db = (tp & 0xFF) - (sp & 0xFF);
-                diff += dr*dr + dg*dg + db*db;
-                samples++;
-            }
-        }
-        return samples > 0 ? diff / samples : Double.MAX_VALUE;
-    }
-
-    private List<int[]> findBullets(Bitmap bitmap, int shipX, int shipY) {
+    private List<int[]> findBullets(Mat gray, int shipX, int shipY) {
         List<int[]> bullets = new ArrayList<>();
-        int searchR = 300;
-        int x0 = Math.max(0, shipX - searchR);
-        int x1 = Math.min(bitmap.getWidth(), shipX + searchR);
-        int y0 = Math.max(0, shipY - searchR);
-        int y1 = Math.min(bitmap.getHeight(), shipY + searchR);
+        try {
+            // Пороговая фильтрация — находим очень тёмные пиксели
+            Mat thresh = new Mat();
+            Imgproc.threshold(gray, thresh, 40, 255, Imgproc.THRESH_BINARY_INV);
 
-        for (int y = y0; y < y1; y += 4) {
-            for (int x = x0; x < x1; x += 4) {
-                int pixel = bitmap.getPixel(x, y);
-                int r = (pixel >> 16) & 0xFF;
-                int g = (pixel >> 8) & 0xFF;
-                int b = pixel & 0xFF;
-                if (r < 40 && g < 40 && b < 40) {
-                    double distToShip = Math.sqrt(Math.pow(x - shipX, 2) + Math.pow(y - shipY, 2));
-                    if (distToShip > 30) {
-                        bullets.add(new int[]{x, y});
+            // Находим контуры
+            List<MatOfPoint> contours = new ArrayList<>();
+            Mat hierarchy = new Mat();
+            Imgproc.findContours(thresh, contours, hierarchy,
+                    Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
+
+            for (MatOfPoint contour : contours) {
+                double area = Imgproc.contourArea(contour);
+                // Фильтруем по размеру — пули маленькие, не слишком большие
+                if (area > 20 && area < 2000) {
+                    Rect rect = Imgproc.boundingRect(contour);
+                    int cx = rect.x + rect.width / 2;
+                    int cy = rect.y + rect.height / 2;
+
+                    // Не берём пиксели слишком близко к кораблю
+                    double dist = Math.sqrt(Math.pow(cx - shipX, 2) + Math.pow(cy - shipY, 2));
+                    if (dist > 40) {
+                        bullets.add(new int[]{cx, cy, rect.width, rect.height});
                     }
                 }
+                contour.release();
             }
+
+            thresh.release();
+            hierarchy.release();
+        } catch (Exception e) {
+            lastError = "findBullets: " + e.getMessage();
         }
         return bullets;
     }
 
     private int[] findClosestPrev(int[] bullet, List<int[]> prevList) {
         int[] closest = null;
-        double minDist = 60;
+        double minDist = 80;
         for (int[] prev : prevList) {
             double d = Math.sqrt(Math.pow(bullet[0]-prev[0],2) + Math.pow(bullet[1]-prev[1],2));
             if (d < minDist) {
@@ -349,14 +362,26 @@ public class BotService extends Service {
             long now = System.currentTimeMillis();
             long deltaTime = prevFrameTime == 0 ? 100 : now - prevFrameTime;
 
-            int[] shipPos = findShip(bitmap);
+            // Конвертируем в Mat и делаем grayscale
+            Mat mat = new Mat();
+            Utils.bitmapToMat(bitmap, mat);
+            Mat gray = new Mat();
+            Imgproc.cvtColor(mat, gray, Imgproc.COLOR_RGBA2GRAY);
+            mat.release();
+
+            // Находим корабль
+            int[] shipPos = findShip(gray);
             shipX = shipPos[0];
             shipY = shipPos[1];
 
-            List<int[]> currentBullets = findBullets(bitmap, shipX, shipY);
+            // Находим пули
+            List<int[]> currentBullets = findBullets(gray, shipX, shipY);
             currentBulletsForDraw = currentBullets;
+            gray.release();
 
-            debugInfo = "Корабль:" + shipX + "," + shipY + " Пули:" + currentBullets.size() + " Acc:" + (accessibility != null);
+            debugInfo = "Корабль:" + shipX + "," + shipY +
+                       " Пули:" + currentBullets.size() +
+                       " Acc:" + (accessibility != null);
 
             debugOverlay.postInvalidate();
 
@@ -376,8 +401,9 @@ public class BotService extends Service {
                         };
                     }
 
-                    double dist = Math.sqrt(Math.pow(predicted[0] - shipX, 2) + Math.pow(predicted[1] - shipY, 2));
-                    if (dist < 200) {
+                    double dist = Math.sqrt(Math.pow(predicted[0] - shipX, 2) +
+                                          Math.pow(predicted[1] - shipY, 2));
+                    if (dist < 250) {
                         double weight = 1.0 / (dist + 1);
                         dangerX += predicted[0] * weight;
                         dangerY += predicted[1] * weight;
@@ -424,4 +450,4 @@ public class BotService extends Service {
 
     @Override
     public IBinder onBind(Intent intent) { return null; }
-                }
+                                                                 }
