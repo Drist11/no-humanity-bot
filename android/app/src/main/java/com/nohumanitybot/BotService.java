@@ -146,14 +146,8 @@ public class BotService extends Service {
                     lastError = "ship.png не найден!";
                 }
 
-                Bitmap cloudBitmap = BitmapFactory.decodeResource(getResources(), R.drawable.cloud);
-                if (cloudBitmap != null) {
-                    cloudTemplate = new Mat();
-                    Utils.bitmapToMat(cloudBitmap, cloudTemplate);
-                    Imgproc.cvtColor(cloudTemplate, cloudTemplate, Imgproc.COLOR_RGBA2GRAY);
-                } else {
-                    lastError = "cloud.png не найден!";
-                }
+                // Облако использует тот же файл ship.png
+                cloudTemplate = shipTemplate.clone();
             }
 
             android.util.DisplayMetrics metrics = getResources().getDisplayMetrics();
