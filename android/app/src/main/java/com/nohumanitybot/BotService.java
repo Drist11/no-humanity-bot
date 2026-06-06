@@ -43,7 +43,7 @@ public class BotService extends Service {
         startForeground(1, notification);
 
         // Загружаем шаблон кораблика
-        shipTemplate = BitmapFactory.decodeResource(getResources(), R.drawable.Screenshot_20260606_132955__2);
+        shipTemplate = BitmapFactory.decodeResource(getResources(), R.drawable.ship);
 
         // Берём реальный размер экрана
         android.util.DisplayMetrics metrics = getResources().getDisplayMetrics();
