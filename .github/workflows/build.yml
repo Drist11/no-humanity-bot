@@ -15,12 +15,13 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
-          
+
       - name: Build APK
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug --info 2>&1 | tail -50
+          ./gradlew assembleDebug
+          find . -name "*.apk" -type f
           
       - name: Upload APK
         uses: actions/upload-artifact@v4
