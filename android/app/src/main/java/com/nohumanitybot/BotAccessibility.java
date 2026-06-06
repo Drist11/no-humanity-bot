@@ -3,13 +3,19 @@ package com.nohumanitybot;
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.GestureDescription;
 import android.graphics.Path;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.accessibility.AccessibilityEvent;
+import android.widget.Toast;
 
 public class BotAccessibility extends AccessibilityService {
 
     @Override
     public void onServiceConnected() {
         BotService.accessibility = this;
+        new Handler(Looper.getMainLooper()).post(() ->
+            Toast.makeText(this, "Бот подключён!", Toast.LENGTH_LONG).show()
+        );
     }
 
     public void swipe(int fromX, int fromY, int toX, int toY) {
