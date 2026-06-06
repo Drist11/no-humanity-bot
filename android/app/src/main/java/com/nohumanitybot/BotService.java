@@ -30,13 +30,10 @@ import android.widget.TextView;
 import org.opencv.android.OpenCVLoader;
 import org.opencv.android.Utils;
 import org.opencv.core.Core;
-import org.opencv.core.CvType;
 import org.opencv.core.Mat;
 import org.opencv.core.MatOfPoint;
 import org.opencv.core.Point;
 import org.opencv.core.Rect;
-import org.opencv.core.Scalar;
-import org.opencv.core.Size;
 import org.opencv.imgproc.Imgproc;
 
 import java.nio.ByteBuffer;
@@ -97,12 +94,10 @@ public class BotService extends Service {
             super.onDraw(canvas);
             canvas.drawRect(0, 0, getWidth(), getHeight(), bgPaint);
 
-            // Зелёный квадрат вокруг корабля
             if (shipX > 0 && shipY > 0) {
                 canvas.drawRect(shipX-25, shipY-25, shipX+25, shipY+25, shipPaint);
             }
 
-            // Красные квадраты вокруг пуль
             for (int[] bullet : currentBulletsForDraw) {
                 canvas.drawRect(bullet[0]-12, bullet[1]-12,
                                bullet[0]+12, bullet[1]+12, bulletPaint);
@@ -124,13 +119,11 @@ public class BotService extends Service {
                     .build();
             startForeground(1, notification);
 
-            // Инициализация OpenCV
-            if (!OpenCVLoader.initLocal()) {
+            if (!OpenCVLoader.initDebug()) {
                 lastError = "OpenCV не загрузился!";
                 Log.e(TAG, lastError);
             } else {
                 debugInfo = "OpenCV OK";
-                // Загружаем шаблон корабля через OpenCV
                 Bitmap shipBitmap = BitmapFactory.decodeResource(getResources(), R.drawable.ship);
                 if (shipBitmap != null) {
                     shipTemplate = new Mat();
@@ -288,16 +281,13 @@ public class BotService extends Service {
             lastError = "Шаблон не загружен!";
             return new int[]{screenWidth/2, screenHeight/2};
         }
-
         try {
             Mat result = new Mat();
             Imgproc.matchTemplate(gray, shipTemplate, result, Imgproc.TM_CCOEFF_NORMED);
             Core.MinMaxLocResult mmr = Core.minMaxLoc(result);
             Point matchLoc = mmr.maxLoc;
-
             int x = (int)(matchLoc.x + shipTemplate.cols() / 2);
             int y = (int)(matchLoc.y + shipTemplate.rows() / 2);
-
             result.release();
             return new int[]{x, y};
         } catch (Exception e) {
@@ -309,11 +299,8 @@ public class BotService extends Service {
     private List<int[]> findBullets(Mat gray, int shipX, int shipY) {
         List<int[]> bullets = new ArrayList<>();
         try {
-            // Пороговая фильтрация — находим очень тёмные пиксели
             Mat thresh = new Mat();
             Imgproc.threshold(gray, thresh, 40, 255, Imgproc.THRESH_BINARY_INV);
-
-            // Находим контуры
             List<MatOfPoint> contours = new ArrayList<>();
             Mat hierarchy = new Mat();
             Imgproc.findContours(thresh, contours, hierarchy,
@@ -321,13 +308,10 @@ public class BotService extends Service {
 
             for (MatOfPoint contour : contours) {
                 double area = Imgproc.contourArea(contour);
-                // Фильтруем по размеру — пули маленькие, не слишком большие
                 if (area > 20 && area < 2000) {
                     Rect rect = Imgproc.boundingRect(contour);
                     int cx = rect.x + rect.width / 2;
                     int cy = rect.y + rect.height / 2;
-
-                    // Не берём пиксели слишком близко к кораблю
                     double dist = Math.sqrt(Math.pow(cx - shipX, 2) + Math.pow(cy - shipY, 2));
                     if (dist > 40) {
                         bullets.add(new int[]{cx, cy, rect.width, rect.height});
@@ -335,7 +319,6 @@ public class BotService extends Service {
                 }
                 contour.release();
             }
-
             thresh.release();
             hierarchy.release();
         } catch (Exception e) {
@@ -362,19 +345,16 @@ public class BotService extends Service {
             long now = System.currentTimeMillis();
             long deltaTime = prevFrameTime == 0 ? 100 : now - prevFrameTime;
 
-            // Конвертируем в Mat и делаем grayscale
             Mat mat = new Mat();
             Utils.bitmapToMat(bitmap, mat);
             Mat gray = new Mat();
             Imgproc.cvtColor(mat, gray, Imgproc.COLOR_RGBA2GRAY);
             mat.release();
 
-            // Находим корабль
             int[] shipPos = findShip(gray);
             shipX = shipPos[0];
             shipY = shipPos[1];
 
-            // Находим пули
             List<int[]> currentBullets = findBullets(gray, shipX, shipY);
             currentBulletsForDraw = currentBullets;
             gray.release();
@@ -400,7 +380,6 @@ public class BotService extends Service {
                             (int)(bullet[1] + vy * 300)
                         };
                     }
-
                     double dist = Math.sqrt(Math.pow(predicted[0] - shipX, 2) +
                                           Math.pow(predicted[1] - shipY, 2));
                     if (dist < 250) {
@@ -418,7 +397,6 @@ public class BotService extends Service {
                     double dy = shipY - dangerY;
                     double len = Math.sqrt(dx*dx + dy*dy);
                     if (len > 0) { dx /= len; dy /= len; }
-
                     int toX = (int) Math.max(50, Math.min(screenWidth-50, shipX + dx * 120));
                     int toY = (int) Math.max(50, Math.min(screenHeight-50, shipY + dy * 120));
                     accessibility.swipe(shipX, shipY, toX, toY);
@@ -450,4 +428,4 @@ public class BotService extends Service {
 
     @Override
     public IBinder onBind(Intent intent) { return null; }
-                                                                 }
+                                }
