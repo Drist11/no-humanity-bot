@@ -89,9 +89,10 @@ public class BotService extends Service {
         btn.setOnClickListener(v -> {
             botEnabled = !botEnabled;
             btn.setText(botEnabled ? "BOT\nON" : "BOT\nOFF");
-            btn.setBackgroundColor(botEnabled ? 
-                Color.argb(200, 0, 200, 0) : 
+            btn.setBackgroundColor(botEnabled ?
+                Color.argb(200, 0, 200, 0) :
                 Color.argb(200, 255, 0, 0));
+            Log.d(TAG, "Bot enabled: " + botEnabled);
         });
 
         ((FrameLayout) floatView).addView(btn);
@@ -105,7 +106,6 @@ public class BotService extends Service {
         params.x = 10;
         params.y = 300;
 
-        // Перетаскивание кнопки
         floatView.setOnTouchListener(new View.OnTouchListener() {
             int lastX, lastY;
             @Override
@@ -169,9 +169,10 @@ public class BotService extends Service {
         int sh = screen.getHeight();
 
         double bestScore = Double.MAX_VALUE;
-        int bestX = sw / 2, bestY = sh * 3 / 4;
+        int bestX = sw / 2, bestY = sh / 2;
 
-          for (int y = 0; y < sh - th; y += 3) {
+        // Ищем по всему экрану
+        for (int y = 0; y < sh - th; y += 3) {
             for (int x = 0; x < sw - tw; x += 3) {
                 double score = matchScore(screen, x, y, tw, th);
                 if (score < bestScore) {
@@ -181,6 +182,8 @@ public class BotService extends Service {
                 }
             }
         }
+
+        Log.d(TAG, "Ship at: " + bestX + "," + bestY + " score: " + bestScore);
         return new int[]{bestX, bestY};
     }
 
@@ -205,6 +208,8 @@ public class BotService extends Service {
         int[] shipPos = findShip(bitmap);
         int shipX = shipPos[0];
         int shipY = shipPos[1];
+
+        Log.d(TAG, "Accessibility: " + (accessibility != null));
 
         int nearestBulletX = -1, nearestBulletY = -1;
         double minDist = Double.MAX_VALUE;
@@ -238,6 +243,7 @@ public class BotService extends Service {
             int newX = Math.max(50, Math.min(screenWidth - 50, shipX + (dx > 0 ? 100 : -100)));
             int newY = Math.max(50, Math.min(screenHeight - 50, shipY + (dy > 0 ? 100 : -100)));
             accessibility.tap(newX, newY);
+            Log.d(TAG, "Tapping to: " + newX + "," + newY);
         }
     }
 
