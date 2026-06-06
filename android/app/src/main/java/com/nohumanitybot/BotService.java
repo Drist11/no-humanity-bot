@@ -4,10 +4,13 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
+import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
 import android.graphics.PixelFormat;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
@@ -19,6 +22,8 @@ import android.os.IBinder;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.MotionEvent;
+import android.view.SurfaceHolder;
+import android.view.SurfaceView;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
@@ -39,13 +44,46 @@ public class BotService extends Service {
     private int screenHeight;
     private boolean botEnabled = false;
     private WindowManager windowManager;
-    private View floatView;
+    private View floatButton;
+    private DebugOverlay debugOverlay;
 
-    // Предыдущие позиции пуль для расчёта траектории
     private List<int[]> prevBullets = new ArrayList<>();
     private long prevFrameTime = 0;
 
+    // Текущие данные для отрисовки
+    private int shipX = 0, shipY = 0;
+    private List<int[]> currentBulletsForDraw = new ArrayList<>();
+
     public static BotAccessibility accessibility;
+
+    // Класс для рисования поверх экрана
+    class DebugOverlay extends View {
+        Paint shipPaint = new Paint();
+        Paint bulletPaint = new Paint();
+
+        public DebugOverlay(Context context) {
+            super(context);
+            shipPaint.setColor(Color.GREEN);
+            shipPaint.setStyle(Paint.Style.STROKE);
+            shipPaint.setStrokeWidth(4);
+            bulletPaint.setColor(Color.RED);
+            bulletPaint.setStyle(Paint.Style.STROKE);
+            bulletPaint.setStrokeWidth(3);
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            // Рисуем зелёный квадрат вокруг корабля
+            if (shipX > 0 && shipY > 0) {
+                canvas.drawRect(shipX - 20, shipY - 20, shipX + 20, shipY + 20, shipPaint);
+            }
+            // Рисуем красные квадраты вокруг пуль
+            for (int[] bullet : currentBulletsForDraw) {
+                canvas.drawRect(bullet[0] - 10, bullet[1] - 10, 
+                               bullet[0] + 10, bullet[1] + 10, bulletPaint);
+            }
+        }
+    }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
@@ -75,14 +113,32 @@ public class BotService extends Service {
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                 imageReader.getSurface(), null, null);
 
+        showDebugOverlay();
         showFloatButton();
         startBotLoop();
         return START_STICKY;
     }
 
-    private void showFloatButton() {
+    private void showDebugOverlay() {
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
-        floatView = new FrameLayout(this);
+        debugOverlay = new DebugOverlay(this);
+
+        WindowManager.LayoutParams params = new WindowManager.LayoutParams(
+                screenWidth, screenHeight,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE |
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE |
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT);
+        params.gravity = Gravity.TOP | Gravity.LEFT;
+        params.x = 0;
+        params.y = 0;
+
+        windowManager.addView(debugOverlay, params);
+    }
+
+    private void showFloatButton() {
+        floatButton = new FrameLayout(this);
         TextView btn = new TextView(this);
         btn.setText("BOT\nOFF");
         btn.setTextColor(Color.WHITE);
@@ -99,7 +155,7 @@ public class BotService extends Service {
                 Color.argb(200, 255, 0, 0));
         });
 
-        ((FrameLayout) floatView).addView(btn);
+        ((FrameLayout) floatButton).addView(btn);
 
         WindowManager.LayoutParams params = new WindowManager.LayoutParams(
                 150, 150,
@@ -110,7 +166,7 @@ public class BotService extends Service {
         params.x = 10;
         params.y = 300;
 
-        floatView.setOnTouchListener(new View.OnTouchListener() {
+        floatButton.setOnTouchListener(new View.OnTouchListener() {
             int lastX, lastY;
             @Override
             public boolean onTouch(View v, MotionEvent event) {
@@ -124,27 +180,25 @@ public class BotService extends Service {
                         params.y += (int) event.getRawY() - lastY;
                         lastX = (int) event.getRawX();
                         lastY = (int) event.getRawY();
-                        windowManager.updateViewLayout(floatView, params);
+                        windowManager.updateViewLayout(floatButton, params);
                         return true;
                 }
                 return false;
             }
         });
 
-        windowManager.addView(floatView, params);
+        windowManager.addView(floatButton, params);
     }
 
     private void startBotLoop() {
         new Thread(() -> {
             while (true) {
                 try {
-                    if (botEnabled) {
-                        Image image = imageReader.acquireLatestImage();
-                        if (image != null) {
-                            Bitmap bitmap = imageToBitmap(image);
-                            image.close();
-                            processFrame(bitmap);
-                        }
+                    Image image = imageReader.acquireLatestImage();
+                    if (image != null) {
+                        Bitmap bitmap = imageToBitmap(image);
+                        image.close();
+                        processFrame(bitmap);
                     }
                     Thread.sleep(100);
                 } catch (Exception e) {
@@ -205,7 +259,6 @@ public class BotService extends Service {
         return diff / samples;
     }
 
-    // Находим все пули на экране
     private List<int[]> findBullets(Bitmap bitmap, int shipX, int shipY) {
         List<int[]> bullets = new ArrayList<>();
         int searchR = 300;
@@ -221,7 +274,6 @@ public class BotService extends Service {
                 int g = (pixel >> 8) & 0xFF;
                 int b = pixel & 0xFF;
                 if (r < 40 && g < 40 && b < 40) {
-                    // Проверяем что это не сам корабль
                     double distToShip = Math.sqrt(Math.pow(x - shipX, 2) + Math.pow(y - shipY, 2));
                     if (distToShip > 30) {
                         bullets.add(new int[]{x, y});
@@ -232,21 +284,9 @@ public class BotService extends Service {
         return bullets;
     }
 
-    // Предсказываем позицию пули через deltaTime миллисекунд
-    private int[] predictBulletPos(int[] bullet, int[] prevBullet, long deltaTime, long predictMs) {
-        if (prevBullet == null) return bullet;
-        float vx = (float)(bullet[0] - prevBullet[0]) / deltaTime;
-        float vy = (float)(bullet[1] - prevBullet[1]) / deltaTime;
-        return new int[]{
-            (int)(bullet[0] + vx * predictMs),
-            (int)(bullet[1] + vy * predictMs)
-        };
-    }
-
-    // Находим ближайшую пулю к предыдущей позиции (для отслеживания)
     private int[] findClosestPrev(int[] bullet, List<int[]> prevList) {
         int[] closest = null;
-        double minDist = 60; // максимальное расстояние для матчинга
+        double minDist = 60;
         for (int[] prev : prevList) {
             double d = Math.sqrt(Math.pow(bullet[0]-prev[0],2) + Math.pow(bullet[1]-prev[1],2));
             if (d < minDist) {
@@ -262,49 +302,53 @@ public class BotService extends Service {
         long deltaTime = prevFrameTime == 0 ? 100 : now - prevFrameTime;
 
         int[] shipPos = findShip(bitmap);
-        int shipX = shipPos[0];
-        int shipY = shipPos[1];
+        shipX = shipPos[0];
+        shipY = shipPos[1];
 
         List<int[]> currentBullets = findBullets(bitmap, shipX, shipY);
+        currentBulletsForDraw = currentBullets;
 
-        // Считаем опасность от каждой пули с учётом траектории
-        double dangerX = 0, dangerY = 0;
-        double totalDanger = 0;
+        // Обновляем overlay
+        debugOverlay.postInvalidate();
 
-        for (int[] bullet : currentBullets) {
-            int[] prev = findClosestPrev(bullet, prevBullets);
-            int[] predicted = predictBulletPos(bullet, prev, deltaTime, 300);
+        if (botEnabled) {
+            double dangerX = 0, dangerY = 0;
+            double totalDanger = 0;
 
-            double dist = Math.sqrt(Math.pow(predicted[0] - shipX, 2) + Math.pow(predicted[1] - shipY, 2));
-            if (dist < 200) {
-                double weight = 1.0 / (dist + 1);
-                dangerX += predicted[0] * weight;
-                dangerY += predicted[1] * weight;
-                totalDanger += weight;
-            }
-        }
+            for (int[] bullet : currentBullets) {
+                int[] prev = findClosestPrev(bullet, prevBullets);
+                int[] predicted = bullet;
+                if (prev != null) {
+                    float vx = (float)(bullet[0] - prev[0]) / deltaTime;
+                    float vy = (float)(bullet[1] - prev[1]) / deltaTime;
+                    predicted = new int[]{
+                        (int)(bullet[0] + vx * 300),
+                        (int)(bullet[1] + vy * 300)
+                    };
+                }
 
-        // Двигаемся свайпом от опасности
-        if (totalDanger > 0 && accessibility != null) {
-            dangerX /= totalDanger;
-            dangerY /= totalDanger;
-
-            // Вектор от опасности
-            double dx = shipX - dangerX;
-            double dy = shipY - dangerY;
-            double len = Math.sqrt(dx*dx + dy*dy);
-            if (len > 0) {
-                dx /= len;
-                dy /= len;
+                double dist = Math.sqrt(Math.pow(predicted[0] - shipX, 2) + Math.pow(predicted[1] - shipY, 2));
+                if (dist < 200) {
+                    double weight = 1.0 / (dist + 1);
+                    dangerX += predicted[0] * weight;
+                    dangerY += predicted[1] * weight;
+                    totalDanger += weight;
+                }
             }
 
-            int moveDistance = 120;
-            int toX = (int) Math.max(50, Math.min(screenWidth - 50, shipX + dx * moveDistance));
-            int toY = (int) Math.max(50, Math.min(screenHeight - 50, shipY + dy * moveDistance));
+            if (totalDanger > 0 && accessibility != null) {
+                dangerX /= totalDanger;
+                dangerY /= totalDanger;
 
-            // Свайп от текущей позиции корабля до безопасной точки
-            accessibility.swipe(shipX, shipY, toX, toY);
-            Log.d(TAG, "Swipe from " + shipX + "," + shipY + " to " + toX + "," + toY);
+                double dx = shipX - dangerX;
+                double dy = shipY - dangerY;
+                double len = Math.sqrt(dx*dx + dy*dy);
+                if (len > 0) { dx /= len; dy /= len; }
+
+                int toX = (int) Math.max(50, Math.min(screenWidth - 50, shipX + dx * 120));
+                int toY = (int) Math.max(50, Math.min(screenHeight - 50, shipY + dy * 120));
+                accessibility.swipe(shipX, shipY, toX, toY);
+            }
         }
 
         prevBullets = currentBullets;
@@ -319,10 +363,11 @@ public class BotService extends Service {
 
     @Override
     public void onDestroy() {
-        if (floatView != null) windowManager.removeView(floatView);
+        if (floatButton != null) windowManager.removeView(floatButton);
+        if (debugOverlay != null) windowManager.removeView(debugOverlay);
         super.onDestroy();
     }
 
     @Override
     public IBinder onBind(Intent intent) { return null; }
-            }
+                        }
