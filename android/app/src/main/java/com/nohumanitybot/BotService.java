@@ -264,6 +264,10 @@ public class BotService extends Service {
     }
 
     private int[] findShip(Bitmap screen) {
+        if (shipTemplate == null) {
+            lastError = "ship.png не загружен!";
+            return new int[]{screenWidth/2, screenHeight/2};
+        }
         int tw = shipTemplate.getWidth();
         int th = shipTemplate.getHeight();
         int sw = screen.getWidth();
@@ -299,7 +303,7 @@ public class BotService extends Service {
                 samples++;
             }
         }
-        return diff / samples;
+        return samples > 0 ? diff / samples : Double.MAX_VALUE;
     }
 
     private List<int[]> findBullets(Bitmap bitmap, int shipX, int shipY) {
@@ -364,8 +368,8 @@ public class BotService extends Service {
                     int[] prev = findClosestPrev(bullet, prevBullets);
                     int[] predicted = bullet;
                     if (prev != null) {
-                        float vx = (float)(bullet[0] - prev[0]) / deltaTime;
-                        float vy = (float)(bullet[1] - prev[1]) / deltaTime;
+                        float vx = (bullet[0] - prev[0]) / (float)deltaTime;
+                        float vy = (bullet[1] - prev[1]) / (float)deltaTime;
                         predicted = new int[]{
                             (int)(bullet[0] + vx * 300),
                             (int)(bullet[1] + vy * 300)
@@ -413,8 +417,8 @@ public class BotService extends Service {
 
     @Override
     public void onDestroy() {
-        if (floatButton != null) windowManager.removeView(floatButton);
-        if (debugOverlay != null) windowManager.removeView(debugOverlay);
+        if (floatButton != null && windowManager != null) windowManager.removeView(floatButton);
+        if (debugOverlay != null && windowManager != null) windowManager.removeView(debugOverlay);
         super.onDestroy();
     }
 
