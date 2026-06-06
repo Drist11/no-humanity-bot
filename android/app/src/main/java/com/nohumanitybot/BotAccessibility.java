@@ -12,11 +12,12 @@ public class BotAccessibility extends AccessibilityService {
         BotService.accessibility = this;
     }
 
-    public void tap(int x, int y) {
+    public void swipe(int fromX, int fromY, int toX, int toY) {
         Path path = new Path();
-        path.moveTo(x, y);
+        path.moveTo(fromX, fromY);
+        path.lineTo(toX, toY);
         GestureDescription.Builder builder = new GestureDescription.Builder();
-        builder.addStroke(new GestureDescription.StrokeDescription(path, 0, 50));
+        builder.addStroke(new GestureDescription.StrokeDescription(path, 0, 200));
         dispatchGesture(builder.build(), null, null);
     }
 
