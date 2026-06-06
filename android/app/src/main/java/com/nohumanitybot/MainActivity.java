@@ -14,28 +14,24 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        
+
         TextView tv = new TextView(this);
-        tv.setText("NoHumanity Bot\n\nНажми кнопку чтобы запустить бота");
+        tv.setText("NoHumanity Bot\n\nНажми кнопку — появится плавающий кружок поверх игры.");
         tv.setTextSize(18);
         tv.setPadding(40, 40, 40, 20);
 
         Button btn = new Button(this);
         btn.setText("Запустить бота");
-        btn.setOnClickListener(v -> startProjection());
+        btn.setOnClickListener(v -> {
+            projectionManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
+            startActivityForResult(projectionManager.createScreenCaptureIntent(), REQUEST_CODE);
+        });
 
         android.widget.LinearLayout layout = new android.widget.LinearLayout(this);
         layout.setOrientation(android.widget.LinearLayout.VERTICAL);
         layout.addView(tv);
         layout.addView(btn);
         setContentView(layout);
-
-        projectionManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
-    }
-
-    private void startProjection() {
-        Intent intent = projectionManager.createScreenCaptureIntent();
-        startActivityForResult(intent, REQUEST_CODE);
     }
 
     @Override
@@ -45,6 +41,7 @@ public class MainActivity extends Activity {
             serviceIntent.putExtra("resultCode", resultCode);
             serviceIntent.putExtra("data", data);
             startForegroundService(serviceIntent);
+            finish(); // закрываем MainActivity
         }
     }
 }
