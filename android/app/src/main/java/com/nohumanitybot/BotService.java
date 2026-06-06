@@ -7,6 +7,7 @@ import android.app.Service;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
@@ -16,6 +17,12 @@ import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
 import android.os.IBinder;
 import android.util.Log;
+import android.view.Gravity;
+import android.view.MotionEvent;
+import android.view.View;
+import android.view.WindowManager;
+import android.widget.FrameLayout;
+import android.widget.TextView;
 
 import java.nio.ByteBuffer;
 
@@ -26,9 +33,11 @@ public class BotService extends Service {
     private VirtualDisplay virtualDisplay;
     private ImageReader imageReader;
     private Bitmap shipTemplate;
-
     private int screenWidth;
     private int screenHeight;
+    private boolean botEnabled = false;
+    private WindowManager windowManager;
+    private View floatView;
 
     public static BotAccessibility accessibility;
 
@@ -37,15 +46,13 @@ public class BotService extends Service {
         createNotificationChannel();
         Notification notification = new Notification.Builder(this, CHANNEL_ID)
                 .setContentTitle("NoHumanity Bot")
-                .setContentText("Бот работает...")
+                .setContentText("Бот активен")
                 .setSmallIcon(android.R.drawable.ic_menu_compass)
                 .build();
         startForeground(1, notification);
 
-        // Загружаем шаблон кораблика
         shipTemplate = BitmapFactory.decodeResource(getResources(), R.drawable.ship);
 
-        // Берём реальный размер экрана
         android.util.DisplayMetrics metrics = getResources().getDisplayMetrics();
         screenWidth = metrics.widthPixels;
         screenHeight = metrics.heightPixels;
@@ -62,19 +69,78 @@ public class BotService extends Service {
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                 imageReader.getSurface(), null, null);
 
+        showFloatButton();
         startBotLoop();
         return START_STICKY;
+    }
+
+    private void showFloatButton() {
+        windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
+
+        floatView = new FrameLayout(this);
+        TextView btn = new TextView(this);
+        btn.setText("BOT\nOFF");
+        btn.setTextColor(Color.WHITE);
+        btn.setBackgroundColor(Color.argb(200, 255, 0, 0));
+        btn.setGravity(Gravity.CENTER);
+        btn.setPadding(20, 20, 20, 20);
+        btn.setTextSize(12);
+
+        btn.setOnClickListener(v -> {
+            botEnabled = !botEnabled;
+            btn.setText(botEnabled ? "BOT\nON" : "BOT\nOFF");
+            btn.setBackgroundColor(botEnabled ? 
+                Color.argb(200, 0, 200, 0) : 
+                Color.argb(200, 255, 0, 0));
+        });
+
+        ((FrameLayout) floatView).addView(btn);
+
+        WindowManager.LayoutParams params = new WindowManager.LayoutParams(
+                150, 150,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                PixelFormat.TRANSLUCENT);
+        params.gravity = Gravity.TOP | Gravity.RIGHT;
+        params.x = 10;
+        params.y = 300;
+
+        // Перетаскивание кнопки
+        floatView.setOnTouchListener(new View.OnTouchListener() {
+            int lastX, lastY;
+            @Override
+            public boolean onTouch(View v, MotionEvent event) {
+                switch (event.getAction()) {
+                    case MotionEvent.ACTION_DOWN:
+                        lastX = (int) event.getRawX();
+                        lastY = (int) event.getRawY();
+                        return true;
+                    case MotionEvent.ACTION_MOVE:
+                        params.x -= (int) event.getRawX() - lastX;
+                        params.y += (int) event.getRawY() - lastY;
+                        lastX = (int) event.getRawX();
+                        lastY = (int) event.getRawY();
+                        windowManager.updateViewLayout(floatView, params);
+                        return true;
+                }
+                return false;
+            }
+        });
+
+        windowManager.addView(floatView, params);
     }
 
     private void startBotLoop() {
         new Thread(() -> {
             while (true) {
                 try {
-                    Image image = imageReader.acquireLatestImage();
-                    if (image != null) {
-                        Bitmap bitmap = imageToBitmap(image);
-                        image.close();
-                        processFrame(bitmap);
+                    if (botEnabled) {
+                        Image image = imageReader.acquireLatestImage();
+                        if (image != null) {
+                            Bitmap bitmap = imageToBitmap(image);
+                            image.close();
+                            processFrame(bitmap);
+                        }
                     }
                     Thread.sleep(100);
                 } catch (Exception e) {
@@ -96,7 +162,6 @@ public class BotService extends Service {
         return bitmap;
     }
 
-    // Template matching — ищем кораблик на экране
     private int[] findShip(Bitmap screen) {
         int tw = shipTemplate.getWidth();
         int th = shipTemplate.getHeight();
@@ -106,7 +171,6 @@ public class BotService extends Service {
         double bestScore = Double.MAX_VALUE;
         int bestX = sw / 2, bestY = sh * 3 / 4;
 
-        // Ищем только в нижней половине экрана
         for (int y = sh / 2; y < sh - th; y += 3) {
             for (int x = 0; x < sw - tw; x += 3) {
                 double score = matchScore(screen, x, y, tw, th);
@@ -117,14 +181,12 @@ public class BotService extends Service {
                 }
             }
         }
-
         return new int[]{bestX, bestY};
     }
 
     private double matchScore(Bitmap screen, int startX, int startY, int tw, int th) {
         double diff = 0;
         int samples = 0;
-        // Сравниваем каждый 4й пиксель для скорости
         for (int y = 0; y < th; y += 4) {
             for (int x = 0; x < tw; x += 4) {
                 int tp = shipTemplate.getPixel(x, y);
@@ -140,16 +202,13 @@ public class BotService extends Service {
     }
 
     private void processFrame(Bitmap bitmap) {
-        // Находим корабль через template matching
         int[] shipPos = findShip(bitmap);
         int shipX = shipPos[0];
         int shipY = shipPos[1];
 
-        // Находим ближайшую пулю
         int nearestBulletX = -1, nearestBulletY = -1;
         double minDist = Double.MAX_VALUE;
 
-        // Ищем пули в радиусе 250px вокруг корабля
         int searchR = 250;
         int x0 = Math.max(0, shipX - searchR);
         int x1 = Math.min(bitmap.getWidth(), shipX + searchR);
@@ -173,14 +232,12 @@ public class BotService extends Service {
             }
         }
 
-        // Двигаемся от пули
         if (nearestBulletX != -1 && accessibility != null && minDist < 200) {
             int dx = shipX - nearestBulletX;
             int dy = shipY - nearestBulletY;
             int newX = Math.max(50, Math.min(screenWidth - 50, shipX + (dx > 0 ? 100 : -100)));
             int newY = Math.max(50, Math.min(screenHeight - 50, shipY + (dy > 0 ? 100 : -100)));
             accessibility.tap(newX, newY);
-            Log.d(TAG, "Ship: " + shipX + "," + shipY + " Bullet: " + nearestBulletX + "," + nearestBulletY + " → " + newX + "," + newY);
         }
     }
 
@@ -191,5 +248,11 @@ public class BotService extends Service {
     }
 
     @Override
+    public void onDestroy() {
+        if (floatView != null) windowManager.removeView(floatView);
+        super.onDestroy();
+    }
+
+    @Override
     public IBinder onBind(Intent intent) { return null; }
-                   }
+            }
