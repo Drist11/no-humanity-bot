@@ -34,6 +34,7 @@ import org.opencv.core.Mat;
 import org.opencv.core.MatOfPoint;
 import org.opencv.core.Point;
 import org.opencv.core.Rect;
+import org.opencv.core.Scalar;
 import org.opencv.imgproc.Imgproc;
 
 import java.nio.ByteBuffer;
@@ -47,6 +48,7 @@ public class BotService extends Service {
     private VirtualDisplay virtualDisplay;
     private ImageReader imageReader;
     private Mat shipTemplate;
+    private Mat cloudTemplate;
     private int screenWidth;
     private int screenHeight;
     private boolean botEnabled = false;
@@ -55,10 +57,13 @@ public class BotService extends Service {
     private DebugOverlay debugOverlay;
 
     private List<int[]> prevBullets = new ArrayList<>();
+    private List<int[]> prevClouds = new ArrayList<>();
     private long prevFrameTime = 0;
 
     private int shipX = 0, shipY = 0;
+    private int cloudX = 0, cloudY = 0;
     private List<int[]> currentBulletsForDraw = new ArrayList<>();
+    private List<int[]> currentCloudsForDraw = new ArrayList<>();
     private String lastError = "Нет ошибок";
     private String debugInfo = "Запуск...";
 
@@ -67,6 +72,7 @@ public class BotService extends Service {
     class DebugOverlay extends View {
         Paint shipPaint = new Paint();
         Paint bulletPaint = new Paint();
+        Paint cloudPaint = new Paint();
         Paint bgPaint = new Paint();
         Paint textPaint = new Paint();
         Paint errorPaint = new Paint();
@@ -80,6 +86,9 @@ public class BotService extends Service {
             bulletPaint.setColor(Color.RED);
             bulletPaint.setStyle(Paint.Style.STROKE);
             bulletPaint.setStrokeWidth(4);
+            cloudPaint.setColor(Color.CYAN);
+            cloudPaint.setStyle(Paint.Style.STROKE);
+            cloudPaint.setStrokeWidth(4);
             bgPaint.setColor(Color.argb(1, 0, 0, 0));
             textPaint.setColor(Color.YELLOW);
             textPaint.setTextSize(28);
@@ -101,6 +110,10 @@ public class BotService extends Service {
             for (int[] bullet : currentBulletsForDraw) {
                 canvas.drawRect(bullet[0]-12, bullet[1]-12,
                                bullet[0]+12, bullet[1]+12, bulletPaint);
+            }
+
+            if (cloudX > 0 && cloudY > 0) {
+                canvas.drawRect(cloudX-30, cloudY-30, cloudX+30, cloudY+30, cloudPaint);
             }
 
             canvas.drawText(debugInfo, 10, getHeight() - 80, textPaint);
@@ -132,12 +145,25 @@ public class BotService extends Service {
                 } else {
                     lastError = "ship.png не найден!";
                 }
+
+                Bitmap cloudBitmap = BitmapFactory.decodeResource(getResources(), R.drawable.cloud);
+                if (cloudBitmap != null) {
+                    cloudTemplate = new Mat();
+                    Utils.bitmapToMat(cloudBitmap, cloudTemplate);
+                    Imgproc.cvtColor(cloudTemplate, cloudTemplate, Imgproc.COLOR_RGBA2GRAY);
+                } else {
+                    lastError = "cloud.png не найден!";
+                }
             }
 
             android.util.DisplayMetrics metrics = getResources().getDisplayMetrics();
             screenWidth = metrics.widthPixels;
             screenHeight = metrics.heightPixels;
             debugInfo = "Экран: " + screenWidth + "x" + screenHeight;
+
+            // Облако стартует в центре экрана
+            cloudX = screenWidth / 2;
+            cloudY = screenHeight / 2;
 
             int resultCode = intent.getIntExtra("resultCode", -1);
             Intent data = intent.getParcelableExtra("data");
@@ -344,6 +370,33 @@ public class BotService extends Service {
         return bullets;
     }
 
+    private int[] findCloud(Mat gray) {
+        try {
+            if (cloudTemplate == null || cloudTemplate.empty()) {
+                return new int[]{cloudX, cloudY};
+            }
+
+            Mat result = new Mat();
+            Imgproc.matchTemplate(gray, cloudTemplate, result, Imgproc.TM_CCOEFF_NORMED);
+
+            Core.MinMaxLocResult mmr = Core.minMaxLoc(result);
+            double threshold = 0.6;
+
+            if (mmr.maxVal > threshold) {
+                Point topLeft = mmr.maxLoc;
+                int cx = (int) (topLeft.x + cloudTemplate.cols() / 2);
+                int cy = (int) (topLeft.y + cloudTemplate.rows() / 2);
+                result.release();
+                return new int[]{cx, cy};
+            }
+
+            result.release();
+        } catch (Exception e) {
+            lastError = "findCloud: " + e.getMessage();
+        }
+        return new int[]{cloudX, cloudY};
+    }
+
     private int[] findClosestPrev(int[] bullet, List<int[]> prevList) {
         int[] closest = null;
         double minDist = 80;
@@ -355,6 +408,62 @@ public class BotService extends Service {
             }
         }
         return closest;
+    }
+
+    private void moveCloud(List<int[]> currentBullets, long deltaTime) {
+        try {
+            double dangerX = 0, dangerY = 0;
+            double totalDanger = 0;
+
+            // Предсказываем позицию пуль и считаем "опасность" для облака
+            for (int[] bullet : currentBullets) {
+                int[] prev = findClosestPrev(bullet, prevBullets);
+                int[] predicted = bullet;
+                
+                if (prev != null && deltaTime > 0) {
+                    float vx = (bullet[0] - prev[0]) / (float)deltaTime;
+                    float vy = (bullet[1] - prev[1]) / (float)deltaTime;
+                    predicted = new int[]{
+                        (int)(bullet[0] + vx * 300),
+                        (int)(bullet[1] + vy * 300)
+                    };
+                }
+
+                // Считаем расстояние от облака до предсказанной позиции пули
+                double dist = Math.sqrt(Math.pow(predicted[0] - cloudX, 2) +
+                                      Math.pow(predicted[1] - cloudY, 2));
+                
+                // Если пуля близко, облако уворачивается
+                if (dist < 300) {
+                    double weight = 1.0 / (dist + 1);
+                    dangerX += predicted[0] * weight;
+                    dangerY += predicted[1] * weight;
+                    totalDanger += weight;
+                }
+            }
+
+            // Если есть опасность, уворачиваемся
+            if (totalDanger > 0) {
+                dangerX /= totalDanger;
+                dangerY /= totalDanger;
+                double dx = cloudX - dangerX;
+                double dy = cloudY - dangerY;
+                double len = Math.sqrt(dx*dx + dy*dy);
+                if (len > 0) { 
+                    dx /= len; 
+                    dy /= len; 
+                }
+                
+                // Двигаем облако от опасности на 150 пиксель
+                int newX = (int) Math.max(50, Math.min(screenWidth-50, cloudX + dx * 150));
+                int newY = (int) Math.max(50, Math.min(screenHeight-50, cloudY + dy * 150));
+                
+                cloudX = newX;
+                cloudY = newY;
+            }
+        } catch (Exception e) {
+            lastError = "moveCloud: " + e.getMessage();
+        }
     }
 
     private void processFrame(Bitmap bitmap) {
@@ -373,12 +482,21 @@ public class BotService extends Service {
             shipY = shipPos[1];
 
             List<int[]> currentBullets = findBullets(gray, shipX, shipY);
+            int[] cloudPos = findCloud(gray);
+            cloudX = cloudPos[0];
+            cloudY = cloudPos[1];
+
             currentBulletsForDraw = currentBullets;
+            
             gray.release();
 
             debugInfo = "Корабль:" + shipX + "," + shipY +
+                       " Облако:" + cloudX + "," + cloudY +
                        " Пули:" + currentBullets.size() +
                        " Acc:" + (accessibility != null);
+
+            // ГЛАВНОЕ: Облако уворачивается от пуль
+            moveCloud(currentBullets, deltaTime);
 
             debugOverlay.postInvalidate();
 
