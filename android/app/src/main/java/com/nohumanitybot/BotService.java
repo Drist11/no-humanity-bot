@@ -277,19 +277,36 @@ public class BotService extends Service {
     }
 
     private int[] findShip(Mat gray) {
-        if (shipTemplate == null) {
-            lastError = "Шаблон не загружен!";
-            return new int[]{screenWidth/2, screenHeight/2};
-        }
         try {
-            Mat result = new Mat();
-            Imgproc.matchTemplate(gray, shipTemplate, result, Imgproc.TM_CCOEFF_NORMED);
-            Core.MinMaxLocResult mmr = Core.minMaxLoc(result);
-            Point matchLoc = mmr.maxLoc;
-            int x = (int)(matchLoc.x + shipTemplate.cols() / 2);
-            int y = (int)(matchLoc.y + shipTemplate.rows() / 2);
-            result.release();
-            return new int[]{x, y};
+            // Ищем светлые объекты (корабль белый)
+            Mat thresh = new Mat();
+            Imgproc.threshold(gray, thresh, 180, 255, Imgproc.THRESH_BINARY);
+
+            List<MatOfPoint> contours = new ArrayList<>();
+            Mat hierarchy = new Mat();
+            Imgproc.findContours(thresh, contours, hierarchy,
+                    Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
+
+            double maxArea = 0;
+            int bestX = screenWidth/2, bestY = screenHeight/2;
+
+            for (MatOfPoint contour : contours) {
+                double area = Imgproc.contourArea(contour);
+                // Корабль больше пуль но меньше всего экрана
+                if (area > 500 && area < 15000) {
+                    if (area > maxArea) {
+                        maxArea = area;
+                        Rect rect = Imgproc.boundingRect(contour);
+                        bestX = rect.x + rect.width / 2;
+                        bestY = rect.y + rect.height / 2;
+                    }
+                }
+                contour.release();
+            }
+
+            thresh.release();
+            hierarchy.release();
+            return new int[]{bestX, bestY};
         } catch (Exception e) {
             lastError = "findShip: " + e.getMessage();
             return new int[]{screenWidth/2, screenHeight/2};
@@ -428,4 +445,4 @@ public class BotService extends Service {
 
     @Override
     public IBinder onBind(Intent intent) { return null; }
-                                }
+}
