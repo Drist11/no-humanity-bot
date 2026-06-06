@@ -6,22 +6,25 @@ import android.media.projection.MediaProjectionManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.Settings;
+import android.util.Log;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
 public class MainActivity extends Activity {
+    private static final String TAG = "MainActivity";
     private static final int REQUEST_CODE = 1000;
     private static final int OVERLAY_CODE = 2000;
     private MediaProjectionManager projectionManager;
+    private TextView tv;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        TextView tv = new TextView(this);
-        tv.setText("NoHumanity Bot");
-        tv.setTextSize(22);
+        tv = new TextView(this);
+        tv.setText("NoHumanity Bot\n\n1. Нажми Разрешения\n2. Запусти бота\n3. Разреши запись экрана");
+        tv.setTextSize(16);
         tv.setPadding(40, 60, 40, 20);
 
         Button btnOverlay = new Button(this);
@@ -39,11 +42,19 @@ public class MainActivity extends Activity {
                 tv.setText("Сначала разреши отображение поверх других приложений!");
                 return;
             }
-            projectionManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
-            startActivityForResult(projectionManager.createScreenCaptureIntent(), REQUEST_CODE);
+            try {
+                projectionManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
+                if (projectionManager != null) {
+                    startActivityForResult(projectionManager.createScreenCaptureIntent(), REQUEST_CODE);
+                } else {
+                    tv.setText("Ошибка: не удалось получить MediaProjectionManager!");
+                }
+            } catch (Exception e) {
+                tv.setText("Ошибка: " + e.getMessage());
+                Log.e(TAG, "Error: " + e.getMessage());
+            }
         });
 
-        // Тестовая кнопка свайпа
         Button btnTest = new Button(this);
         btnTest.setText("ТЕСТ СВАЙПА");
         btnTest.setOnClickListener(v -> {
@@ -66,12 +77,18 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQUEST_CODE && resultCode == RESULT_OK) {
-            Intent serviceIntent = new Intent(this, BotService.class);
-            serviceIntent.putExtra("resultCode", resultCode);
-            serviceIntent.putExtra("data", data);
-            startForegroundService(serviceIntent);
-            finish();
+            try {
+                Intent serviceIntent = new Intent(this, BotService.class);
+                serviceIntent.putExtra("resultCode", resultCode);
+                serviceIntent.putExtra("data", data);
+                startForegroundService(serviceIntent);
+                finish();
+            } catch (Exception e) {
+                tv.setText("Ошибка запуска сервиса: " + e.getMessage());
+                Log.e(TAG, "Error: " + e.getMessage());
+            }
         }
     }
-                    }
+            }
