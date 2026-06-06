@@ -25,6 +25,8 @@ import android.widget.FrameLayout;
 import android.widget.TextView;
 
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.List;
 
 public class BotService extends Service {
     private static final String TAG = "BotService";
@@ -38,6 +40,10 @@ public class BotService extends Service {
     private boolean botEnabled = false;
     private WindowManager windowManager;
     private View floatView;
+
+    // Предыдущие позиции пуль для расчёта траектории
+    private List<int[]> prevBullets = new ArrayList<>();
+    private long prevFrameTime = 0;
 
     public static BotAccessibility accessibility;
 
@@ -76,7 +82,6 @@ public class BotService extends Service {
 
     private void showFloatButton() {
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
-
         floatView = new FrameLayout(this);
         TextView btn = new TextView(this);
         btn.setText("BOT\nOFF");
@@ -92,7 +97,6 @@ public class BotService extends Service {
             btn.setBackgroundColor(botEnabled ?
                 Color.argb(200, 0, 200, 0) :
                 Color.argb(200, 255, 0, 0));
-            Log.d(TAG, "Bot enabled: " + botEnabled);
         });
 
         ((FrameLayout) floatView).addView(btn);
@@ -171,7 +175,6 @@ public class BotService extends Service {
         double bestScore = Double.MAX_VALUE;
         int bestX = sw / 2, bestY = sh / 2;
 
-        // Ищем по всему экрану
         for (int y = 0; y < sh - th; y += 3) {
             for (int x = 0; x < sw - tw; x += 3) {
                 double score = matchScore(screen, x, y, tw, th);
@@ -182,8 +185,6 @@ public class BotService extends Service {
                 }
             }
         }
-
-        Log.d(TAG, "Ship at: " + bestX + "," + bestY + " score: " + bestScore);
         return new int[]{bestX, bestY};
     }
 
@@ -204,47 +205,110 @@ public class BotService extends Service {
         return diff / samples;
     }
 
-    private void processFrame(Bitmap bitmap) {
-        int[] shipPos = findShip(bitmap);
-        int shipX = shipPos[0];
-        int shipY = shipPos[1];
-
-        Log.d(TAG, "Accessibility: " + (accessibility != null));
-
-        int nearestBulletX = -1, nearestBulletY = -1;
-        double minDist = Double.MAX_VALUE;
-
-        int searchR = 250;
+    // Находим все пули на экране
+    private List<int[]> findBullets(Bitmap bitmap, int shipX, int shipY) {
+        List<int[]> bullets = new ArrayList<>();
+        int searchR = 300;
         int x0 = Math.max(0, shipX - searchR);
         int x1 = Math.min(bitmap.getWidth(), shipX + searchR);
         int y0 = Math.max(0, shipY - searchR);
         int y1 = Math.min(bitmap.getHeight(), shipY + searchR);
 
-        for (int y = y0; y < y1; y += 2) {
-            for (int x = x0; x < x1; x += 2) {
+        for (int y = y0; y < y1; y += 4) {
+            for (int x = x0; x < x1; x += 4) {
                 int pixel = bitmap.getPixel(x, y);
                 int r = (pixel >> 16) & 0xFF;
                 int g = (pixel >> 8) & 0xFF;
                 int b = pixel & 0xFF;
                 if (r < 40 && g < 40 && b < 40) {
-                    double dist = Math.sqrt(Math.pow(x - shipX, 2) + Math.pow(y - shipY, 2));
-                    if (dist < minDist && dist > 20) {
-                        minDist = dist;
-                        nearestBulletX = x;
-                        nearestBulletY = y;
+                    // Проверяем что это не сам корабль
+                    double distToShip = Math.sqrt(Math.pow(x - shipX, 2) + Math.pow(y - shipY, 2));
+                    if (distToShip > 30) {
+                        bullets.add(new int[]{x, y});
                     }
                 }
             }
         }
+        return bullets;
+    }
 
-        if (nearestBulletX != -1 && accessibility != null && minDist < 200) {
-            int dx = shipX - nearestBulletX;
-            int dy = shipY - nearestBulletY;
-            int newX = Math.max(50, Math.min(screenWidth - 50, shipX + (dx > 0 ? 100 : -100)));
-            int newY = Math.max(50, Math.min(screenHeight - 50, shipY + (dy > 0 ? 100 : -100)));
-            accessibility.tap(newX, newY);
-            Log.d(TAG, "Tapping to: " + newX + "," + newY);
+    // Предсказываем позицию пули через deltaTime миллисекунд
+    private int[] predictBulletPos(int[] bullet, int[] prevBullet, long deltaTime, long predictMs) {
+        if (prevBullet == null) return bullet;
+        float vx = (float)(bullet[0] - prevBullet[0]) / deltaTime;
+        float vy = (float)(bullet[1] - prevBullet[1]) / deltaTime;
+        return new int[]{
+            (int)(bullet[0] + vx * predictMs),
+            (int)(bullet[1] + vy * predictMs)
+        };
+    }
+
+    // Находим ближайшую пулю к предыдущей позиции (для отслеживания)
+    private int[] findClosestPrev(int[] bullet, List<int[]> prevList) {
+        int[] closest = null;
+        double minDist = 60; // максимальное расстояние для матчинга
+        for (int[] prev : prevList) {
+            double d = Math.sqrt(Math.pow(bullet[0]-prev[0],2) + Math.pow(bullet[1]-prev[1],2));
+            if (d < minDist) {
+                minDist = d;
+                closest = prev;
+            }
         }
+        return closest;
+    }
+
+    private void processFrame(Bitmap bitmap) {
+        long now = System.currentTimeMillis();
+        long deltaTime = prevFrameTime == 0 ? 100 : now - prevFrameTime;
+
+        int[] shipPos = findShip(bitmap);
+        int shipX = shipPos[0];
+        int shipY = shipPos[1];
+
+        List<int[]> currentBullets = findBullets(bitmap, shipX, shipY);
+
+        // Считаем опасность от каждой пули с учётом траектории
+        double dangerX = 0, dangerY = 0;
+        double totalDanger = 0;
+
+        for (int[] bullet : currentBullets) {
+            int[] prev = findClosestPrev(bullet, prevBullets);
+            int[] predicted = predictBulletPos(bullet, prev, deltaTime, 300);
+
+            double dist = Math.sqrt(Math.pow(predicted[0] - shipX, 2) + Math.pow(predicted[1] - shipY, 2));
+            if (dist < 200) {
+                double weight = 1.0 / (dist + 1);
+                dangerX += predicted[0] * weight;
+                dangerY += predicted[1] * weight;
+                totalDanger += weight;
+            }
+        }
+
+        // Двигаемся свайпом от опасности
+        if (totalDanger > 0 && accessibility != null) {
+            dangerX /= totalDanger;
+            dangerY /= totalDanger;
+
+            // Вектор от опасности
+            double dx = shipX - dangerX;
+            double dy = shipY - dangerY;
+            double len = Math.sqrt(dx*dx + dy*dy);
+            if (len > 0) {
+                dx /= len;
+                dy /= len;
+            }
+
+            int moveDistance = 120;
+            int toX = (int) Math.max(50, Math.min(screenWidth - 50, shipX + dx * moveDistance));
+            int toY = (int) Math.max(50, Math.min(screenHeight - 50, shipY + dy * moveDistance));
+
+            // Свайп от текущей позиции корабля до безопасной точки
+            accessibility.swipe(shipX, shipY, toX, toY);
+            Log.d(TAG, "Swipe from " + shipX + "," + shipY + " to " + toX + "," + toY);
+        }
+
+        prevBullets = currentBullets;
+        prevFrameTime = now;
     }
 
     private void createNotificationChannel() {
