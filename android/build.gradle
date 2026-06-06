@@ -4,7 +4,8 @@ buildscript {
         mavenCentral()
     }
     dependencies {
-        classpath 'com.android.tools.build:gradle:8.1.0'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'org.opencv:opencv:4.8.0'
     }
 }
 
